@@ -1,0 +1,200 @@
+---
+title: "ea7"
+author: "Patrick Bichiou"
+date: "2024-06-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load required libraries
+library(dplyr)  # Data manipulation
+library(tidyr)  # Data tidying
+library(lubridate)  # Date manipulation
+library(ggplot2) # plotting
+```
+
+---
+DATA CLEAN & EDA
+---
+```{r}
+# Load the data
+patient_info <- read.csv("./data/patient_info.csv")
+hospital_visit <- read.csv("./data/hospital_visit.csv")
+
+patient_info
+hospital_visit
+```
+
+```{r}
+# Task 1: Replace missing BMI values with the median BMI for the corresponding gender
+# Function to replace missing BMI
+replace_missing_bmi <- function(data) {
+  # Replace missing BMI with median based on gender
+  median_bmi <- data %>% group_by(Sex) %>% summarise(median_bmi = median(BMI, na.rm = TRUE))
+  data %>% mutate(BMI = ifelse(is.na(BMI), median_bmi$median_bmi[match(Sex, median_bmi$Sex)], BMI))
+}
+
+# Replace missing BMI
+patient_info_replaced_bmi <- replace_missing_bmi(patient_info)
+
+patient_info_replaced_bmi
+```
+
+```{r}
+# Task 2: Sanity check and remove samples that do not pass
+# Function to clean data with sanity checks
+clean_patient_data <- function(data) {
+  # Check for age >= 40
+  data %>% filter(Age >= 40) %>%
+    # Check BMI range
+    filter(BMI >= 15 & BMI <= 60) %>%
+    # Check valid values in Smoking_status
+    filter(Smoking_status %in% c("Never", "Previous", "Current", "Prefer not to answer")) %>%
+    # Check for valid Disease factor
+    filter(!is.na(Disease))
+}
+
+# Clean data
+patient_info_clean <- clean_patient_data(patient_info_replaced_bmi)
+
+patient_info_clean
+```
+
+```{r}
+# Task 3: Calculate the number of visits each patient made since 1/1/2020
+hospital_visit_2020 <- hospital_visit %>%
+  filter(VisitDate >= as.Date("1/1/2020")) %>%
+  group_by(Participant_ID) %>%
+  summarise(Number_of_visits = n())
+
+hospital_visit_2020
+```
+
+```{r}
+# Task 4: Create a summary table and/or chart showing the number of visits for each month
+visit_summary <- hospital_visit %>%
+  filter(!is.na(VisitDate)) %>%  # Filter out patients with no visits
+  mutate(Month = month(as.POSIXlt(VisitDate, format="%d/%m/%Y"))) %>%  # Extract month
+  group_by(Month) %>%
+  summarise(Number_of_patients = n()) %>%
+  arrange(Month) %>%  # Order by month
+  filter(!is.na(Month))
+
+visit_summary
+
+# Plotting the number of visits per month
+ggplot(visit_summary, aes(x = Month, y = Number_of_patients)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Number of Visits by Month", x = "Month", y = "Number of Patients")
+```
+
+```{r}
+# Task 5: Add a new column "age group"
+patient_info_with_age_group <- patient_info_clean %>%
+  mutate(age_group = case_when(
+    Age >= 40 & Age <= 49 ~ "40-49",
+    Age >= 50 & Age <= 59 ~ "50-59",
+    Age >= 60 & Age <= 69 ~ "60-69",
+    TRUE ~ "70+"
+  ))
+
+patient_info_with_age_group
+```
+
+```{r}
+# Task 6: Merge the two files
+merged_data <- patient_info_with_age_group %>%
+  left_join(hospital_visit_2020, by = "Participant_ID") %>%
+  mutate(Number_of_visits = ifelse(is.na(Number_of_visits), 0, Number_of_visits))  # Handle missing visits
+
+merged_data
+```
+
+---
+STATISTICS
+---
+
+```{r}
+# Task 1: Compare BMI between the healthy and disease groups using a box or violin plot
+ggplot(merged_data, aes(x = factor(Disease), y = BMI)) +
+  geom_violin() +
+  labs(title = "BMI Distribution between Disease and Healthy Groups", x = "Group (1=Disease, 2=Healthy)", y = "BMI")
+
+print(
+  "A violin plot is used to compare the BMI distributions between the disease and healthy groups. This helps visualize the central tendency and spread of BMI for each group."
+)
+```
+
+```{r}
+# Task 2: Examine if the proportion of smoking status differs between the healthy and disease groups
+smoking_vs_disease <- table(merged_data$Smoking_status, merged_data$Disease)
+chi2_test <- chisq.test(smoking_vs_disease)
+
+chi2_test
+
+print("The chi-square test evaluates whether the proportions of smoking status categories differ between the disease and healthy groups. The p-value indicates if the observed differences are statistically significant.")
+```
+
+```{r}
+# Task 3: Analyze the relationship between smoking status and the number of hospital visits, including the overall population
+
+# Calculate the total number of visits by smoking status, disease group, and overall
+overall_visits <- merged_data %>%
+  group_by(Smoking_status) %>%
+  summarise(Number_of_visits = sum(Number_of_visits))
+
+# Calculate the number of visits by smoking status and disease group
+group_visits <- merged_data %>%
+  group_by(Smoking_status, Disease) %>%
+  summarise(Number_of_visits = sum(Number_of_visits)) %>%
+  mutate(Group = ifelse(Disease == 1, "Disease", "Healthy"))
+
+# Add the overall population to the group_visits data
+group_visits_overall <- overall_visits %>%
+  mutate(Group = "Overall")
+
+# Combine the data frames
+combined_visits <- bind_rows(group_visits, group_visits_overall)
+
+# Plotting the number of hospital visits by smoking status, disease group, and overall
+ggplot(combined_visits, aes(x = Smoking_status, y = Number_of_visits, fill = Group)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Number of Hospital Visits by Smoking Status, Disease Group, and Overall Population",
+       x = "Smoking Status", y = "Number of Visits") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print("This plot shows the relationship between smoking status and the number of hospital visits for both the disease and healthy groups.")
+```
+
+```{r}
+# Task 4: Determine if the number of visits is higher in the disease group compared to the healthy group using a one-tailed t-test
+
+# Extract the number of visits for the disease and healthy groups
+disease_visits <- merged_data$Number_of_visits[merged_data$Disease == 1]
+healthy_visits <- merged_data$Number_of_visits[merged_data$Disease == 2]
+
+# Perform a one-tailed t-test
+t_test_result <- t.test(disease_visits, healthy_visits, alternative = "greater")
+
+# Print the p-value
+t_test_result
+
+print("The one-tailed t-test is used to determine if the mean number of visits in the disease group is significantly greater than in the healthy group. First I need to extract the number of visits for each group, where disease_visits: Contains the number of visits for patients in the disease group and healthy_visits: Contains the number of visits for patients in the healthy group. Than I need to perform the one-tailed t-test: The t.test() function is used with the argument alternative = 'greater' to specify a one-tailed test where we are testing if the mean number of visits in the disease group is greater than in the healthy group.The p-value indicates whether there is a statistically significant difference in the number of visits between the two groups. If the p-value is less than the significance level (e.g., 0.05), we reject the null hypothesis and conclude that the disease group has a significantly higher number of visits compared to the healthy group.")
+```
+
+```{r}
+# Task 5: Calculate disease prevalence across different age groups and test if it differs
+age_group_disease_prevalence <- merged_data %>%
+  group_by(age_group) %>%
+  summarise(prevalence = mean(Disease == 1))
+
+age_group_disease_prevalence
+
+age_group_vs_disease <- table(merged_data$age_group, merged_data$Disease)
+chi2_test_age_group <- chisq.test(age_group_vs_disease)
+
+chi2_test_age_group$p.value
+
+print("The prevalence of disease is calculated for each age group. The chi-square test determines if there are significant differences in disease prevalence across the age groups. The p-value indicates if the differences are statistically significant.")
+```
